@@ -12,8 +12,16 @@ object Example {
   case class Get(key: String) extends StoreOps[Option[String]]
   case class Set(key: String, value: String) extends StoreOps[Unit]
 
+
+  sealed trait RandomOps[A]
+  case object Rand extends RandomOps[Int]
+
   def lift[F[_], G[_], A](fa: F[A])(implicit i: Inject[F, G]):
   Free[G, A] = Free.liftF(i.inj(fa))
+
+  class Random[F[_]](implicit i: Inject[RandomOps, F]) {
+    def rand: Free[F, Int] = lift(Rand)
+  }
 
   class Console[F[_]](implicit i: Inject[ConsoleOps, F]) {
     def print(s: String): Free[F, Unit] = lift(Print(s))
@@ -35,15 +43,19 @@ object Example {
       }
   }
 
-  type Prog[A] = Coproduct[ConsoleOps, StoreOps, A]
+  type CStore[A] = Coproduct[ConsoleOps, StoreOps, A]
+  type Prog[A] = Coproduct[RandomOps, CStore, A]
   val store = new Store[Prog]()
   val console = new Console[Prog]()
+  val random = new Random[Prog]()
 
   val prog: Free[Prog, Unit] = for {
      _ <- console.print("Starting app")
      _ <- store.set("foo", "bar")
      res <- store.get("foo")
      _ <- console.print("Looked up foo: " ++ res.toString)
+     i <- random.rand
+     _ <- console.print("Got random int: " ++ i.toString)
   } yield ()
 
   val runConsole = new (ConsoleOps ~> Id.Id) {
@@ -63,5 +75,13 @@ object Example {
     }
   }
 
-  def run = prog.foldMap(runConsole.or(runStore))
+  val runRand = new (RandomOps ~> Id.Id) {
+    def apply[A](op: RandomOps[A]) = op match {
+      case Rand => scala.util.Random.nextInt
+    }
+  }
+
+  val cs: (CStore ~> Id.Id) = runConsole.or(runStore)
+  val pi: (Prog ~> Id.Id) = runRand.or(cs)
+  def run = prog.foldMap(pi)
 }
